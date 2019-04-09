@@ -794,7 +794,7 @@ public:
   /// IgnoreParens() + IgnoreImpCasts() until reaching a fixed point. However
   /// this is currently not the case. Instead IgnoreParenImpCasts() skips:
   /// * What IgnoreParens() skips
-  /// * ImplicitCastExpr
+  /// * What IgnoreImpCasts() skips
   /// * MaterializeTemporaryExpr
   /// * SubstNonTypeTemplateParmExpr
   Expr *IgnoreParenImpCasts() LLVM_READONLY;
@@ -3402,6 +3402,9 @@ public:
 
   static bool isComparisonOp(Opcode Opc) { return Opc >= BO_Cmp && Opc<=BO_NE; }
   bool isComparisonOp() const { return isComparisonOp(getOpcode()); }
+
+  static bool isCommaOp(Opcode Opc) { return Opc == BO_Comma; }
+  bool isCommaOp() const { return isCommaOp(getOpcode()); }
 
   static Opcode negateComparisonOp(Opcode Opc) {
     switch (Opc) {

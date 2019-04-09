@@ -26,7 +26,7 @@ class FakeStatCache : public FileSystemStatCache {
 private:
   // Maps a file/directory path to its desired stat result.  Anything
   // not in this map is considered to not exist in the file system.
-  llvm::StringMap<FileData, llvm::BumpPtrAllocator> StatCalls;
+  llvm::StringMap<llvm::vfs::Status, llvm::BumpPtrAllocator> StatCalls;
 
   void InjectFileOrDirectory(const char *Path, ino_t INode, bool IsFile) {
 #ifndef _WIN32
@@ -35,15 +35,14 @@ private:
     Path = NormalizedPath.c_str();
 #endif
 
-    FileData Data;
-    Data.Name = Path;
-    Data.Size = 0;
-    Data.ModTime = 0;
-    Data.UniqueID = llvm::sys::fs::UniqueID(1, INode);
-    Data.IsDirectory = !IsFile;
-    Data.IsNamedPipe = false;
-    Data.InPCH = false;
-    StatCalls[Path] = Data;
+    auto fileType = IsFile ?
+      llvm::sys::fs::file_type::regular_file :
+      llvm::sys::fs::file_type::directory_file;
+    llvm::vfs::Status Status(Path, llvm::sys::fs::UniqueID(1, INode),
+                             /*MTime*/{}, /*User*/0, /*Group*/0,
+                             /*Size*/0, fileType,
+                             llvm::sys::fs::perms::all_all);
+    StatCalls[Path] = Status;
   }
 
 public:
@@ -58,7 +57,7 @@ public:
   }
 
   // Implement FileSystemStatCache::getStat().
-  LookupResult getStat(StringRef Path, FileData &Data, bool isFile,
+  LookupResult getStat(StringRef Path, llvm::vfs::Status &Status, bool isFile,
                        std::unique_ptr<llvm::vfs::File> *F,
                        llvm::vfs::FileSystem &FS) override {
 #ifndef _WIN32
@@ -68,7 +67,7 @@ public:
 #endif
 
     if (StatCalls.count(Path) != 0) {
-      Data = StatCalls[Path];
+      Status = StatCalls[Path];
       return CacheExists;
     }
 
@@ -347,17 +346,36 @@ TEST_F(FileManagerTest, getVirtualFileFillsRealPathName) {
 }
 
 TEST_F(FileManagerTest, getFileDontOpenRealPath) {
+  SmallString<64> CustomWorkingDir;
+#ifdef _WIN32
+  CustomWorkingDir = "C:/";
+#else
+  CustomWorkingDir = "/";
+#endif
+
+  auto FS = IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem>(
+      new llvm::vfs::InMemoryFileSystem);
+  // setCurrentworkingdirectory must finish without error.
+  ASSERT_TRUE(!FS->setCurrentWorkingDirectory(CustomWorkingDir));
+
+  FileSystemOptions Opts;
+  FileManager Manager(Opts, FS);
+
+  // Inject fake files into the file system.
   auto statCache = llvm::make_unique<FakeStatCache>();
-  statCache->InjectDirectory("/tmp/abc", 42);
-  SmallString<64> Path("/tmp/abc/foo.cpp");
-  statCache->InjectFile(Path.str().str().c_str(), 43);
-  manager.setStatCache(std::move(statCache));
+  statCache->InjectDirectory("/tmp", 42);
+  statCache->InjectFile("/tmp/test", 43);
 
-  const FileEntry *file = manager.getFile(Path, /*openFile=*/false);
+  Manager.setStatCache(std::move(statCache));
 
+  // Check for real path.
+  const FileEntry *file = Manager.getFile("/tmp/test", /*OpenFile=*/false);
   ASSERT_TRUE(file != nullptr);
+  ASSERT_TRUE(file->isValid());
+  SmallString<64> ExpectedResult = CustomWorkingDir;
 
-  ASSERT_EQ(file->tryGetRealPathName(), Path);
+  llvm::sys::path::append(ExpectedResult, "tmp", "test");
+  EXPECT_EQ(file->tryGetRealPathName(), ExpectedResult);
 }
 
 } // anonymous namespace
